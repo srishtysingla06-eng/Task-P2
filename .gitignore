@@ -1,29 +1,4 @@
-# ----- Dependencies -----
 node_modules/
-
-# ------ Evironment variables and secrets -----
 .env
-.env.local
-.env.*.local
-*.pem
-*.key
-
-# ----- Build output -----
-dist/
-build/
-
-# ---Logs---
-logs/
-*.logs
 npm-debug.log*
-yarn-error.log*
-
-# -----Test and coverage output---
-coverage/
-
-#-----Editor and OS files ---
-.vscode/*
-!.vscode/extensions.json
-.idea/
-.DS_Strore
-Thumbs.db
+.DS_Store

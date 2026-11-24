@@ -1,57 +1,112 @@
 require("dotenv").config();
 
+const path = require("path");
 const express = require("express");
 const sgMail = require("@sendgrid/mail");
 
 const app = express();
+const PORT = Number(process.env.PORT) || 3000;
 
-const PORT = 3000;
+// Stores valid subscription submissions and their email-delivery status.
+// This is an in-memory array, so it resets when the server restarts.
+const subscribers = [];
 
-// Set SendGrid API key
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+app.use(express.urlencoded({ extended: false }));
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
 
-// Serve files from public folder
-app.use(express.static("public"));
+const apiKey = process.env.SENDGRID_API_KEY;
+const fromEmail = process.env.SENDGRID_FROM_EMAIL;
 
-// Read form data
-app.use(express.urlencoded({ extended: true }));
+if (apiKey) {
+  sgMail.setApiKey(apiKey);
+} else {
+  console.warn("SENDGRID_API_KEY is not set. Email sending is disabled until it is configured.");
+}
 
-// Handle subscription form
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+app.get("/health", (_req, res) => {
+  res.status(200).json({
+    status: "ok",
+    sendGridConfigured: Boolean(apiKey && fromEmail),
+    subscriberCount: subscribers.length
+  });
+});
+
 app.post("/subscribe", async (req, res) => {
+  const email = String(req.body.email || "").trim().toLowerCase();
 
-    const email = req.body.email;
+  if (!email || !isValidEmail(email)) {
+    return res.status(400).send("Please enter a valid email address.");
+  }
 
-    console.log("Subscriber email:", email);
+  const existingSubscriber = subscribers.find((subscriber) => subscriber.email === email);
+  if (existingSubscriber && existingSubscriber.emailStatus !== "failed") {
+    return res.status(409).send("This email address has already been submitted.");
+  }
 
-    const message = {
-        to: email,
-        from: process.env.SENDGRID_FROM_EMAIL,
-        subject: "Welcome to DEV@Deakin!",
-        text: "Thank you for subscribing to the DEV@Deakin Daily Insider!",
-        html: `
-            <h1>Welcome to DEV@Deakin!</h1>
-            <p>Thank you for subscribing to our Daily Insider.</p>
-            <p>We're excited to have you with us!</p>
-        `
-    };
+  if (!apiKey || !fromEmail) {
+    console.error("SendGrid is not configured. Check SENDGRID_API_KEY and SENDGRID_FROM_EMAIL in .env.");
+    return res.status(500).send("The subscription service is not configured. Please try again later.");
+  }
 
-    try {
+  // Record the valid submission before contacting SendGrid. The status is
+  // updated below so the array clearly distinguishes sent and failed emails.
+  const subscriberRecord = {
+    email,
+    emailStatus: "pending",
+    sendGridStatusCode: null,
+    submittedAt: new Date().toISOString()
+  };
+  subscribers.push(subscriberRecord);
 
-        await sgMail.send(message);
+  const message = {
+    to: email,
+    from: fromEmail,
+    subject: "Welcome to DEV@Deakin!",
+    text: "Thank you for subscribing to the DEV@Deakin Daily Insider! We're excited to have you with us!",
+    html: `
+      <h1>Welcome to DEV@Deakin!</h1>
+      <p>Thank you for subscribing to our Daily Insider.</p>
+      <p>We're excited to have you with us!</p>
+    `
+  };
 
-        console.log("Welcome email sent successfully.");
+  try {
+    // SendGrid returns a response object containing its HTTP status code.
+    const [sendGridResponse] = await sgMail.send(message);
+    const sendGridStatusCode = sendGridResponse.statusCode;
 
-        res.send("Subscription successful! Check your email.");
+    subscriberRecord.emailStatus = "sent";
+    subscriberRecord.sendGridStatusCode = sendGridStatusCode;
 
-    } catch (error) {
+    console.log("Welcome email sent successfully.");
+    console.log("SendGrid status code:", sendGridStatusCode);
+    console.log("Subscribers:", subscribers);
 
-        console.error("SendGrid error:", error.response?.body || error);
+    return res.status(200).send(
+      `Subscription successful! Welcome email sent. SendGrid status: ${sendGridStatusCode}.`
+    );
+  } catch (error) {
+    const sendGridStatusCode = error.response?.statusCode || error.code || "Unknown";
 
-        res.status(500).send("Subscription received, but the email could not be sent.");
+    console.error("SendGrid request failed.");
+    console.error("SendGrid status code:", sendGridStatusCode);
+    subscriberRecord.emailStatus = "failed";
+    subscriberRecord.sendGridStatusCode = sendGridStatusCode;
 
-    }
+    console.error("SendGrid error details:", error.response?.body || error.message || error);
+    console.log("Subscribers:", subscribers);
+
+    return res.status(502).send(
+      "Your subscription could not be completed because the welcome email was not sent. Please try again later."
+    );
+  }
 });
 
 app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+  console.log(`Server is running on http://localhost:${PORT}`);
 });
